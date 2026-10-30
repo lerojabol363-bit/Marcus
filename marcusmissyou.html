@@ -46,8 +46,47 @@
     }
 
     #lyrics {
+      z-index: 1;
       overflow: hidden;
       pointer-events: none;
+    }
+
+    .music-control {
+      position: absolute;
+      z-index: 2;
+      top: max(12px, env(safe-area-inset-top));
+      left: 12px;
+      width: min(360px, calc(100% - 24px));
+      padding: 10px;
+      border: 1px solid rgb(255 255 255 / 28%);
+      border-radius: 16px;
+      background: rgb(45 0 0 / 92%);
+      color: #fff;
+    }
+
+    .music-control button {
+      min-height: 40px;
+      padding: 8px 14px;
+      border: 0;
+      border-radius: 999px;
+      background: #fff;
+      color: #650000;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+
+    .music-control button:focus-visible {
+      outline: 3px solid #ffd6d6;
+      outline-offset: 3px;
+    }
+
+    #music-status {
+      display: inline-block;
+      margin-left: 8px;
+      font-size: 12px;
+      line-height: 1.3;
     }
 
     .lyric-card {
@@ -73,6 +112,13 @@
   <main class="stage" aria-label="Floating Christmas lyrics">
     <canvas id="notes" aria-hidden="true"></canvas>
     <div id="lyrics" aria-live="off"></div>
+    <div class="music-control">
+      <button id="music-toggle" type="button" aria-pressed="false">Play background music</button>
+      <span id="music-status" role="status">Merry Christmas, Please Dont Call</span>
+      <audio id="background-music" preload="none">
+        <source src="Merry%20Christmas%2C%20Please%20Dont%20Call.mp3" type="audio/mpeg">
+      </audio>
+    </div>
   </main>
 
   <script>
@@ -81,6 +127,7 @@
       const BOX_HEIGHT = 250;
       const RISE_SPEED = 67;
       const BOTTOM_SPAWN_OFFSET = 150;
+      const AUDIO_START_OFFSET = 124;
       const NOTE_SPAWN_TAIL_BUFFER = 8;
       const NOTE_MIN_SPAWN_GAP = 0.35;
       const NOTE_MAX_SPAWN_GAP = 0.9;
@@ -110,6 +157,9 @@
       const canvas = document.querySelector("#notes");
       const context = canvas.getContext("2d");
       const lyricLayer = document.querySelector("#lyrics");
+      const musicButton = document.querySelector("#music-toggle");
+      const musicStatus = document.querySelector("#music-status");
+      const backgroundMusic = document.querySelector("#background-music");
       const cards = [];
       const notes = [];
       const lastLyricTime = lyrics.length ? lyrics[lyrics.length - 1][0] : 0;
@@ -118,12 +168,39 @@
       let pixelRatio = 1;
       let nextLyricIndex = 0;
       let nextNoteSpawnTime = 0;
-      let lastFrameTime = performance.now();
-      const startTime = lastFrameTime;
+      let lastPlaybackTime = null;
       let currentSide = "left";
+      let hasStartedPlayback = false;
 
       const randomBetween = (min, max) => Math.random() * (max - min) + min;
       const choose = (items) => items[Math.floor(Math.random() * items.length)];
+
+      async function toggleMusic() {
+        if (!backgroundMusic.paused) {
+          backgroundMusic.pause();
+          musicButton.textContent = "Play background music";
+          musicButton.setAttribute("aria-pressed", "false");
+          musicStatus.textContent = "Paused";
+          return;
+        }
+
+        try {
+          if (!hasStartedPlayback) {
+            resetTimeline();
+            backgroundMusic.currentTime = AUDIO_START_OFFSET;
+          }
+          await backgroundMusic.play();
+          hasStartedPlayback = true;
+          lastPlaybackTime = backgroundMusic.currentTime - AUDIO_START_OFFSET;
+          musicButton.textContent = "Pause music";
+          musicButton.setAttribute("aria-pressed", "true");
+          musicStatus.textContent = "Playing background music";
+          requestAnimationFrame(tick);
+        } catch (error) {
+          musicStatus.textContent = "Couldn't play audio. Check the MP3 file and try again.";
+          console.error("Unable to play the background music:", error);
+        }
+      }
 
       function resize() {
         width = window.innerWidth;
@@ -223,10 +300,31 @@
         context.globalAlpha = 1;
       }
 
+      function resetTimeline() {
+        for (const card of cards) {
+          card.element.remove();
+        }
+        cards.length = 0;
+        notes.length = 0;
+        nextLyricIndex = 0;
+        nextNoteSpawnTime = 0;
+        currentSide = "left";
+        context.clearRect(0, 0, width, height);
+      }
+
       function tick(now) {
-        const elapsed = (now - startTime) / 1000;
-        const deltaTime = Math.min((now - lastFrameTime) / 1000, 0.1);
-        lastFrameTime = now;
+        if (backgroundMusic.paused || backgroundMusic.ended) {
+          return;
+        }
+
+        const elapsed = backgroundMusic.currentTime - AUDIO_START_OFFSET;
+        if (lastPlaybackTime !== null && elapsed < lastPlaybackTime) {
+          resetTimeline();
+        }
+        const deltaTime = lastPlaybackTime === null
+          ? 0
+          : Math.min(Math.max(0, elapsed - lastPlaybackTime), 0.1);
+        lastPlaybackTime = elapsed;
 
         while (nextLyricIndex < lyrics.length && lyrics[nextLyricIndex][0] <= elapsed) {
           addLyric(lyrics[nextLyricIndex][1], elapsed);
@@ -240,15 +338,27 @@
         updateCards(elapsed, deltaTime);
         updateNotes(elapsed, deltaTime);
 
-        if (nextLyricIndex < lyrics.length || cards.length > 0 || notes.length > 0 ||
-            elapsed <= lastLyricTime + NOTE_SPAWN_TAIL_BUFFER) {
-          requestAnimationFrame(tick);
-        }
+        requestAnimationFrame(tick);
       }
 
       window.addEventListener("resize", resize);
+      musicButton.addEventListener("click", toggleMusic);
+      backgroundMusic.addEventListener("ended", async () => {
+        resetTimeline();
+        backgroundMusic.currentTime = AUDIO_START_OFFSET;
+        lastPlaybackTime = 0;
+        try {
+          await backgroundMusic.play();
+        } catch (error) {
+          hasStartedPlayback = false;
+          lastPlaybackTime = null;
+          musicButton.textContent = "Play background music";
+          musicButton.setAttribute("aria-pressed", "false");
+          musicStatus.textContent = "Couldn't restart audio. Tap to try again.";
+          console.error("Unable to restart the background music:", error);
+        }
+      });
       resize();
-      requestAnimationFrame(tick);
     })();
   </script>
 </body>
